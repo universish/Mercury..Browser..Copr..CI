@@ -18,7 +18,8 @@ jobs:
       - name: Gerekli Paketleri Yükle
         run: |
           dnf install -y git curl jq cpio rpm-build rpmdevtools copr-cli \
-                         binutils p7zip tar zstd gzip unzip python3 desktop-file-utils libappstream-glib
+                         binutils p7zip tar zstd gzip unzip python3 \
+                         desktop-file-utils libappstream-glib file
 
       - name: Git Güvenli Dizin Yapılandırması
         run: |
@@ -36,7 +37,7 @@ jobs:
           RELEASE_JSON=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest")
           LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
 
-          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+          if [ -z "$LATEST_TAG" ] \vert{}\vert{} [ "$LATEST_TAG" = "null" ]; then
             echo "Upstream sürüm bulunamadı."
             exit 0
           fi
@@ -45,54 +46,43 @@ jobs:
           echo "clean_version=$CLEAN_VER" >> $GITHUB_OUTPUT
 
           # Öncelik Sırası: rpm -> portable (zip/tar) -> deb -> appimage
-          find_asset() {
-            local arch_pattern="$1"
-            local chosen_url=""
-            local chosen_ext=""
+          find_asset_url() {
+            local arch_pat="$1"
+            local matched_url=""
 
             # 1. RPM
-            chosen_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pattern" \
-              '.assets[] | select(.name | test($pat; "i")) | select(.name | endswith(".rpm")) | .browser_download_url' | head -n 1)
-            if [ -n "$chosen_url" ] && [ "$chosen_url" != "null" ]; then
-              echo "$chosen_url rpm" && return
-            fi
+            matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
+              '.assets[] | select(.name | test($pat; "i")) \vert{} select(.name \vert{} test("\\.rpm$"; "i")) | .browser_download_url' | head -n 1)
+            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
 
             # 2. Portable (ZIP / TAR)
-            chosen_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pattern" \
-              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.zip$|\\.tar\\.xz$|\\.tar\\.gz$|\\.tar$"; "i")) | .browser_download_url' | head -n 1)
-            if [ -n "$chosen_url" ] && [ "$chosen_url" != "null" ]; then
-              echo "$chosen_url portable" && return
-            fi
+            matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
+              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.zip$\vert{}\\.tar\\.xz$|\\.tar\\.gz$\vert{}\\.tar$"; "i")) | .browser_download_url' | head -n 1)
+            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
 
             # 3. DEB
-            chosen_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pattern" \
-              '.assets[] | select(.name | test($pat; "i")) | select(.name | endswith(".deb")) | .browser_download_url' | head -n 1)
-            if [ -n "$chosen_url" ] && [ "$chosen_url" != "null" ]; then
-              echo "$chosen_url deb" && return
-            fi
+            matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
+              '.assets[] | select(.name | test($pat; "i")) \vert{} select(.name \vert{} test("\\.deb$"; "i")) | .browser_download_url' | head -n 1)
+            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
 
             # 4. AppImage
-            chosen_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pattern" \
-              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.appimage$"; "i")) | .browser_download_url' | head -n 1)
-            if [ -n "$chosen_url" ] && [ "$chosen_url" != "null" ]; then
-              echo "$chosen_url appimage" && return
-            fi
+            matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
+              '.assets[] | select(.name | test($pat; "i")) \vert{} select(.name \vert{} test("\\.appimage$"; "i")) | .browser_download_url' | head -n 1)
+            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
 
             echo ""
           }
 
-          RES_X86=$(find_asset "AVX2")
-          RES_ARM=$(find_asset "ARM64")
+          URL_X86=$(find_asset_url "AVX2")
+          URL_ARM=$(find_asset_url "ARM64")
 
-          if [ -z "$RES_X86" ] || [ -z "$RES_ARM" ]; then
-            echo "Gerekli AVX2 veya ARM64 varlıkları eksik."
+          if [ -z "$URL_X86" ] \vert{}\vert{} [ -z "$URL_ARM" ]; then
+            echo "Gerekli AVX2 veya ARM64 varlıkları bulunamadı."
             exit 1
           fi
 
-          echo "url_x86=$(echo $RES_X86 | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "ext_x86=$(echo $RES_X86 | awk '{print $2}')" >> $GITHUB_OUTPUT
-          echo "url_arm=$(echo $RES_ARM | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "ext_arm=$(echo $RES_ARM | awk '{print $2}')" >> $GITHUB_OUTPUT
+          echo "url_x86=$URL_X86" >> $GITHUB_OUTPUT
+          echo "url_arm=$URL_ARM" >> $GITHUB_OUTPUT
 
       - name: İndir, Ayıkla ve Standart Payload Paketle
         run: |
@@ -101,53 +91,65 @@ jobs:
           process_arch() {
             local arch="$1"
             local url="$2"
-            local ext="$3"
-            local filename="raw_${arch}"
+            local filename
+            filename=$(basename "$url")
 
-            mkdir -p "dl_${arch}" "extract_${arch}"
+            echo "İşleniyor: $arch ($filename)"
+            mkdir -p "dl_${arch}" "extract_${arch}" "payload_${arch}"
             curl -sL "$url" -o "dl_${arch}/${filename}"
 
             cd "extract_${arch}"
-            case "$ext" in
-              rpm)
+            case "$filename" in
+              *.rpm)
                 rpm2cpio "../dl_${arch}/${filename}" | cpio -idmv
                 ;;
-              portable)
-                if file "../dl_${arch}/${filename}" | grep -q "Zip"; then
-                  unzip -q "../dl_${arch}/${filename}"
-                else
-                  tar -xf "../dl_${arch}/${filename}"
-                fi
+              *.zip)
+                unzip -q "../dl_${arch}/${filename}"
                 ;;
-              deb)
+              *.tar.gz|*.tgz)
+                tar -xzf "../dl_${arch}/${filename}"
+                ;;
+              *.tar.xz)
+                tar -xJf "../dl_${arch}/${filename}"
+                ;;
+              *.tar.zst)
+                tar --zstd -xf "../dl_${arch}/${filename}"
+                ;;
+              *.tar)
+                tar -xf "../dl_${arch}/${filename}"
+                ;;
+              *.deb)
                 ar x "../dl_${arch}/${filename}"
                 tar -xf data.tar.*
                 ;;
-              appimage)
+              *.AppImage|*.appimage)
                 chmod +x "../dl_${arch}/${filename}"
                 "../dl_${arch}/${filename}" --appimage-extract
                 mv squashfs-root/* .
                 rm -rf squashfs-root
                 ;;
+              *)
+                7z x "../dl_${arch}/${filename}"
+                ;;
             esac
 
-            # Hiyerarşi düzleştirme: ikili dosyanın olduğu dizini köke taşı
-            PAYLOAD_DIR=$(find . -maxdepth 3 -type f \( -name "mercury" -o -name "mercury-browser" \) -printf '%h\n' | head -n 1)
-            if [ -n "$PAYLOAD_DIR" ] && [ "$PAYLOAD_DIR" != "." ]; then
-              mkdir -p root_payload
-              mv "$PAYLOAD_DIR"/* root_payload/
+            # İkili dosyanın (mercury) bulunduğu dizini tespit et ve payload dizinine kopyala
+            BIN_DIR=$(find . -maxdepth 3 -type f \( -name "mercury" -o -name "mercury-browser" \) -exec dirname {} + | head -n 1)
+            
+            if [ -n "$BIN_DIR" ]; then
+              cp -a "$BIN_DIR"/* "../payload_${arch}/"
             else
-              mkdir -p root_payload
-              mv * root_payload/ 2>/dev/null || true
+              cp -a ./* "../payload_${arch}/"
             fi
 
-            cd root_payload
+            cd "../payload_${arch}"
+            # Temiz bir şekilde tar.gz arşivi üret
             tar -czf "../../mercury-payload-${arch}.tar.gz" *
             cd ../..
           }
 
-          process_arch "x86_64" "${{ steps.fetch-assets.outputs.url_x86 }}" "${{ steps.fetch-assets.outputs.ext_x86 }}"
-          process_arch "aarch64" "${{ steps.fetch-assets.outputs.url_arm }}" "${{ steps.fetch-assets.outputs.ext_arm }}"
+          process_arch "x86_64" "${{ steps.fetch-assets.outputs.url_x86 }}"
+          process_arch "aarch64" "${{ steps.fetch-assets.outputs.url_arm }}"
 
       - name: Desktop Dosyasını Akıllı Denetle ve Güncelle
         run: |
@@ -181,95 +183,4 @@ jobs:
               with open(output_desktop, 'w', encoding='utf-8') as f:
                   f.writelines(updated_lines)
           else:
-              full_content = f"""[Desktop Entry]
-          Version=1.0
-          Name=Mercury
-          GenericName=Web Browser
-          Comment=Access the Internet
-          Exec={target_exec} %U
-          StartupNotify=true
-          Terminal=false
-          Icon=mercury-browser
-          Type=Application
-          Categories=Network;WebBrowser;
-          MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
-          Actions=new-window;new-private-window;temp-profile;safe-mode;
-
-          [Desktop Action new-window]
-          Name=New Window
-          Exec={target_exec} %U
-
-          [Desktop Action new-private-window]
-          Name=New Incognito Window
-          Exec={target_exec} --incognito %U
-
-          [Desktop Action temp-profile]
-          Name=Open New Window with a temporary profile
-          Exec={target_exec} --temp-profile %U
-
-          [Desktop Action safe-mode]
-          Name=Open in Safe Mode
-          Exec={target_exec} --safe-mode %U
-          """
-              clean_content = "\n".join([line.lstrip() for line in full_content.strip().splitlines()]) + "\n"
-              with open(output_desktop, 'w', encoding='utf-8') as f:
-                  f.write(clean_content)
-          EOF
-
-      - name: Sürüm ve Sayaç (Release Counter) Yönetimi
-        id: counter
-        run: |
-          STATE_FILE="state.json"
-          CURR_VER="${{ steps.fetch-assets.outputs.clean_version }}"
-          BUILD_NUM=1
-
-          if [ -f "$STATE_FILE" ]; then
-            SAVED_VER=$(jq -r '.version // empty' "$STATE_FILE")
-            SAVED_NUM=$(jq -r '.release // 0' "$STATE_FILE")
-            if [ "$SAVED_VER" = "$CURR_VER" ]; then
-              BUILD_NUM=$((SAVED_NUM + 1))
-            fi
-          fi
-
-          echo "{\"version\": \"$CURR_VER\", \"release\": $BUILD_NUM}" > "$STATE_FILE"
-          echo "release_num=$BUILD_NUM" >> "$GITHUB_OUTPUT"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$STATE_FILE"
-          git commit -m "Auto-increment build: ${CURR_VER}-${BUILD_NUM}" || echo "Değişiklik yok"
-          git push origin HEAD:${{ github.ref_name }} || echo "Push atlandı"
-
-      - name: RPM ve SRPM Paketle
-        run: |
-          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          cp mercury-payload-x86_64.tar.gz ~/rpmbuild/SOURCES/
-          cp mercury-payload-aarch64.tar.gz ~/rpmbuild/SOURCES/
-          cp mercury-launcher.sh ~/rpmbuild/SOURCES/
-          cp mercury-browser.desktop ~/rpmbuild/SOURCES/
-          cp mercury-browser.metainfo.xml ~/rpmbuild/SOURCES/
-          cp specs/mercury-browser.spec ~/rpmbuild/SPECS/
-
-          SPEC_FILE=~/rpmbuild/SPECS/mercury-browser.spec
-          sed -i "s/^Version:.*/Version:        ${{ steps.fetch-assets.outputs.clean_version }}/" "$SPEC_FILE"
-          sed -i "s/^Release:.*/Release:        ${{ steps.counter.outputs.release_num }}%{?dist}/" "$SPEC_FILE"
-
-          rpmbuild -bs "$SPEC_FILE"
-
-          mkdir -p out
-          cp ~/rpmbuild/SRPMS/*.src.rpm out/
-
-      - name: Copr Deposuna Gönder (Sadece Fedora 44 ve Rawhide)
-        env:
-          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
-        run: |
-          mkdir -p ~/.config
-          echo "$COPR_CONFIG" > ~/.config/copr
-          chmod 600 ~/.config/copr
-          SRPM_FILE=$(ls out/*.src.rpm | head -n 1)
-
-          copr-cli build universish/Mercury "$SRPM_FILE" \
-            --chroot fedora-44-x86_64 \
-            --chroot fedora-44-aarch64 \
-            --chroot fedora-rawhide-x86_64 \
-            --chroot fedora-rawhide-aarch64
+              full_content = f

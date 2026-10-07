@@ -1,4 +1,59 @@
-- name: Varlıkları İndir, Ayıkla ve Standart Payload Paketle
+name: Mercury Upstream Sync & Copr Builder
+
+on:
+  schedule:
+    # 16:30 UTC ve 21:30 UTC -> US East (Ashburn, VA) Öğle molası ve Mesai bitimi
+    - cron: '30 16,21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+    steps:
+      - name: Gerekli Paketleri Yükle
+        run: |
+          dnf install -y git curl jq cpio rpm-build rpmdevtools copr-cli \
+                         binutils tar zstd gzip python3 desktop-file-utils \
+                         libappstream-glib file
+
+      - name: Git Güvenli Dizin Yapılandırması
+        run: |
+          git config --global --add safe.directory '*'
+
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Upstream Sürümlerini Denetle
+        id: fetch-version
+        run: |
+          REPO="Alex313031/Mercury"
+          RELEASE_JSON=$(curl -sSL -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${REPO}/releases/latest")
+          
+          LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
+
+          if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "null" ]]; then
+            echo "Hata: Upstream sürüm bulunamadı veya API limiti aşıldı." >&2
+            exit 1
+          fi
+
+          CLEAN_VER=$(echo "$LATEST_TAG" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1)
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER=$(echo "$LATEST_TAG" | sed -E 's/^[^0-9]+//; s/[^0-9.]+$//')
+          fi
+
+          echo "clean_version=$CLEAN_VER" >> $GITHUB_OUTPUT
+          echo "$RELEASE_JSON" > upstream_release.json
+
+      - name: Varlıkları İndir, Ayıkla ve Standart Payload Paketle
         run: |
           set -euo pipefail
           ROOT_DIR="$(pwd)"
@@ -128,3 +183,95 @@
 
           process_arch "x86_64" "AVX2"
           process_arch "aarch64" "ARM64"
+
+      - name: Desktop Dosyasını Doğrula ve Oluştur
+        run: |
+          cat << 'EOF' > mercury-browser.desktop
+          [Desktop Entry]
+          Version=1.0
+          Name=Mercury Browser
+          GenericName=Web Browser
+          Comment=Compiler-optimized web browser with hardware acceleration
+          Exec=mercury-browser %U
+          StartupNotify=true
+          Terminal=false
+          Icon=mercury-browser
+          Type=Application
+          Categories=Network;WebBrowser;
+          MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+          StartupWMClass=mercury-default
+          Actions=new-window;new-private-window;
+
+          [Desktop Action new-window]
+          Name=New Window
+          Exec=mercury-browser %U
+
+          [Desktop Action new-private-window]
+          Name=New Incognito Window
+          Exec=mercury-browser --incognito %U
+          EOF
+          desktop-file-validate mercury-browser.desktop
+
+      - name: Sürüm ve Sayaç (Release Counter) Yönetimi
+        id: counter
+        run: |
+          STATE_FILE="state.json"
+          CURR_VER="${{ steps.fetch-version.outputs.clean_version }}"
+          BUILD_NUM=1
+
+          if [ -f "$STATE_FILE" ]; then
+            SAVED_VER=$(jq -r '.version // empty' "$STATE_FILE")
+            SAVED_NUM=$(jq -r '.release // 0' "$STATE_FILE")
+            if [ "$SAVED_VER" = "$CURR_VER" ]; then
+              BUILD_NUM=$((SAVED_NUM + 1))
+            fi
+          fi
+
+          echo "{\"version\": \"$CURR_VER\", \"release\": $BUILD_NUM}" > "$STATE_FILE"
+          echo "release_num=$BUILD_NUM" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$STATE_FILE"
+          git commit -m "Auto-increment build: ${CURR_VER}-${BUILD_NUM}" || echo "Değişiklik yok"
+          git push origin HEAD:${{ github.ref_name }} || echo "Push atlandı"
+
+      - name: RPM/SRPM Paketle ve Yerel Mock Testi Yap
+        run: |
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cp mercury-payload-x86_64.tar.gz ~/rpmbuild/SOURCES/
+          cp mercury-payload-aarch64.tar.gz ~/rpmbuild/SOURCES/
+          cp mercury-launcher.sh ~/rpmbuild/SOURCES/
+          cp mercury-browser.desktop ~/rpmbuild/SOURCES/
+          cp mercury-browser.metainfo.xml ~/rpmbuild/SOURCES/
+          cp specs/mercury-browser.spec ~/rpmbuild/SPECS/
+
+          SPEC_FILE=~/rpmbuild/SPECS/mercury-browser.spec
+          sed -i "s/^Version:.*/Version:        ${{ steps.fetch-version.outputs.clean_version }}/" "$SPEC_FILE"
+          sed -i "s/^Release:.*/Release:        ${{ steps.counter.outputs.release_num }}%{?dist}/" "$SPEC_FILE"
+
+          desktop-file-validate mercury-browser.desktop
+          appstream-util validate-relax --nonet mercury-browser.metainfo.xml
+
+          echo "Yerel derleme testi yapılıyor..."
+          rpmbuild -ba --target x86_64 "$SPEC_FILE"
+
+          rpmbuild -bs "$SPEC_FILE"
+          mkdir -p out
+          cp ~/rpmbuild/SRPMS/*.src.rpm out/
+
+      - name: Copr Deposuna Gönder (Fedora 44 ve Rawhide)
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          mkdir -p ~/.config
+          echo "$COPR_CONFIG" > ~/.config/copr
+          chmod 600 ~/.config/copr
+          SRPM_FILE=$(ls out/*.src.rpm | head -n 1)
+
+          copr-cli build universish/Mercury "$SRPM_FILE" \
+            --chroot fedora-44-x86_64 \
+            --chroot fedora-44-aarch64 \
+            --chroot fedora-rawhide-x86_64 \
+            --chroot fedora-rawhide-aarch64
+            

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>mercury-browser.desktop</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+  <name>Mercury Browser</name>
+  <summary>Compiler-optimized Chromium fork for AVX2 and ARM64 with GPU hardware acceleration</summary>
+  <description>
+    <p>
+      Mercury is an aggressive compiler-optimized fork of Chromium. This package delivers
+      pre-configured hardware acceleration routing across NVIDIA, AMD, and Intel GPUs, targeting
+      AVX2-capable x86_64 processors and modern ARM64 microarchitectures exclusively.
+    </p>
+  </description>
+  <launchable type="desktop-id">mercury-browser.desktop</launchable>
+  <url type="homepage">https://github.com/Alex313031/Mercury</url>
+  <url type="bugtracker">https://github.com/universish/Mercury..Browser..Copr..CI/issues</url>
+  <provides>
+    <binary>mercury-browser</binary>
+  </provides>
+  <developer_name>Alex313031, universish</developer_name>
+</component>

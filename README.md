@@ -20,9 +20,6 @@ This packaging pipeline provides:
 2. **Deterministic Fallback Pipeline:** The automation scans upstream releases twice daily, strictly enforcing package hierarchy:
    $$\text{RPM} \longrightarrow \text{DEB} \longrightarrow \text{AppImage}$$
 3. **Automated Version & Release Tracking:** Every build increment is tracked deterministically in `state.json`, ensuring clean version bumping (e.g., `<version>-1` $\rightarrow$ `<version>-2`).
-4. **Intelligent Multi-GPU Hardware Routing:**
-   - **NVIDIA GPU Detection:** Automatically applies `NVD_BACKEND=direct`, `__NV_PRIME_RENDER_OFFLOAD=1`, and `__GLX_VENDOR_LIBRARY_NAME=nvidia` alongside ANGLE/OpenGL interop flags.
-   - **Mesa Native Fallback:** Retains standard Mesa/VA-API acceleration pipelines on Intel and AMD platforms.
 
 ---
 
@@ -38,37 +35,7 @@ sudo dnf copr enable universish/Mercury
 
 ```bash
 sudo dnf install -y mercury-browser
-
 ```
-
-### 3. Verify Hardware Acceleration
-
-Launch Mercury Browser, navigate to `chrome://gpu`, and inspect the runtime engine status:
-
-* **Video Decode:** Hardware accelerated
-* **Rasterization:** Hardware accelerated
-* **Graphics Backend:** ANGLE (OpenGL)
-
----
-
-## ⚙️ Configuration & Flags
-
-Upon initial launch, the smart wrapper creates a local configuration file:
-`~/.config/mercury-flags.conf`
-
-```text
---ozone-platform=x11
---enable-features=VaapiVideoDecodeLinuxGL,VaapiVideoEncoderLinuxGL
---ignore-gpu-blocklist
---enable-zero-copy
---use-gl=angle
---use-angle=gl
-
-```
-
-Users can customize browser startup arguments directly in this file without editing the system `.desktop` file.
-
----
 
 ## 🔄 Updating Packages
 
@@ -122,4 +89,6 @@ rm -rf ~/.config/mercury-flags.conf ~/.config/mercury
 
 * **Non-Invasive RPM Spec:** Packages isolate core binaries inside `/opt/mercury-browser/` without overriding base system shared libraries.
 * **Hermetic Packaging:** All artifacts are assembled in official Fedora root containers and submitted to isolated chroots on Fedora Copr.
-* **License:** This packaging automation infrastructure is distributed under the [MIT License](https://www.google.com/search?q=LICENSE). Mercury Browser remains governed by its respective upstream licenses (BSD-3-Clause / Chromium Authors).
+* **License:** This packaging automation infrastructure is distributed under the [MIT License](https://github.com/Alex313031/Mercury/blob/main/LICENSE.md).
+* **Mercury Browser License:** [Mozilla Public License 2.0](https://github.com/universish/Mercury..Browser..Copr..CI/blob/main/LICENSE.md)
+* Mercury Browser remains governed by its respective upstream licenses (BSD-3-Clause / Chromium Authors).

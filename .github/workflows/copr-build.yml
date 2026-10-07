@@ -45,7 +45,11 @@ jobs:
             exit 1
           fi
 
-          CLEAN_VER=$(echo "$LATEST_TAG" | sed 's/[^0-9.]*//g')
+          # Versiyonun başında veya sonunda geçersiz karakter ya da nokta kalmasını önle
+          CLEAN_VER=$(echo "$LATEST_TAG" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1)
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER=$(echo "$LATEST_TAG" | sed -E 's/^[^0-9]+//; s/[^0-9.]+$//')
+          fi
           echo "clean_version=$CLEAN_VER" >> $GITHUB_OUTPUT
 
           # Öncelik Sırası: rpm -> portable (zip/tar) -> deb -> appimage
@@ -92,9 +96,7 @@ jobs:
           URL_ARM=$(find_asset_url "ARM64")
 
           if [[ -z "$URL_X86" || -z "$URL_ARM" ]]; then
-            echo "Hata: Gerekli AVX2 (x86_64) veya ARM64 ikili varlıkları upstream deposunda bulunamadı." >&2
-            echo "Bulunan X86: '$URL_X86'" >&2
-            echo "Bulunan ARM: '$URL_ARM'" >&2
+            echo "Hata: AVX2 veya ARM64 varlıkları bulunamadı." >&2
             exit 1
           fi
 
@@ -104,70 +106,65 @@ jobs:
       - name: İndir, Ayıkla ve Standart Payload Paketle
         run: |
           set -euo pipefail
+          ROOT_DIR="$(pwd)"
 
           process_arch() {
             local arch="$1"
             local url="$2"
-            
-            if [ -z "$url" ]; then
-              echo "Hata: $arch mimarisi için boş URL iletildi." >&2
-              exit 1
-            fi
-
             local filename
             filename=$(basename "$url")
 
             echo "İşleniyor: $arch ($filename) -> $url"
-            mkdir -p "dl_${arch}" "extract_${arch}" "payload_${arch}"
-            curl -sSL "$url" -o "dl_${arch}/${filename}"
+            mkdir -p "${ROOT_DIR}/dl_${arch}" "${ROOT_DIR}/extract_${arch}" "${ROOT_DIR}/payload_${arch}"
+            curl -sSL "$url" -o "${ROOT_DIR}/dl_${arch}/${filename}"
 
-            cd "extract_${arch}"
+            cd "${ROOT_DIR}/extract_${arch}"
             case "$filename" in
               *.rpm)
-                rpm2cpio "../dl_${arch}/${filename}" | cpio -idmv
+                rpm2cpio "${ROOT_DIR}/dl_${arch}/${filename}" | cpio -idmv
                 ;;
               *.zip)
-                unzip -q "../dl_${arch}/${filename}"
+                unzip -q "${ROOT_DIR}/dl_${arch}/${filename}"
                 ;;
               *.tar.gz|*.tgz)
-                tar -xzf "../dl_${arch}/${filename}"
+                tar -xzf "${ROOT_DIR}/dl_${arch}/${filename}"
                 ;;
               *.tar.xz)
-                tar -xJf "../dl_${arch}/${filename}"
+                tar -xJf "${ROOT_DIR}/dl_${arch}/${filename}"
                 ;;
               *.tar.zst)
-                tar --zstd -xf "../dl_${arch}/${filename}"
+                tar --zstd -xf "${ROOT_DIR}/dl_${arch}/${filename}"
                 ;;
               *.tar)
-                tar -xf "../dl_${arch}/${filename}"
+                tar -xf "${ROOT_DIR}/dl_${arch}/${filename}"
                 ;;
               *.deb)
-                ar x "../dl_${arch}/${filename}"
+                ar x "${ROOT_DIR}/dl_${arch}/${filename}"
                 tar -xf data.tar.*
                 ;;
               *.AppImage|*.appimage)
-                chmod +x "../dl_${arch}/${filename}"
-                "../dl_${arch}/${filename}" --appimage-extract
+                chmod +x "${ROOT_DIR}/dl_${arch}/${filename}"
+                "${ROOT_DIR}/dl_${arch}/${filename}" --appimage-extract
                 mv squashfs-root/* .
                 rm -rf squashfs-root
                 ;;
               *)
-                7z x "../dl_${arch}/${filename}"
+                7z x "${ROOT_DIR}/dl_${arch}/${filename}"
                 ;;
             esac
 
-            # mercury veya mercury-browser çalıştırılabilir dosyasının kökünü tespit et
+            # İkili dosyanın olduğu dizini tespit et ve payload klasörüne kopyala
             BIN_DIR=$(find . -maxdepth 4 -type f \( -name "mercury" -o -name "mercury-browser" \) -exec dirname {} + | head -n 1)
 
             if [[ -n "$BIN_DIR" && "$BIN_DIR" != "." ]]; then
-              cp -a "$BIN_DIR"/* "../payload_${arch}/"
+              cp -a "$BIN_DIR"/* "${ROOT_DIR}/payload_${arch}/"
             else
-              cp -a ./* "../payload_${arch}/"
+              cp -a ./* "${ROOT_DIR}/payload_${arch}/"
             fi
 
-            cd "../payload_${arch}"
-            tar -czf "../../mercury-payload-${arch}.tar.gz" *
-            cd ../..
+            # Arşivi doğrudan repo köküne oluştur
+            tar -czf "${ROOT_DIR}/mercury-payload-${arch}.tar.gz" -C "${ROOT_DIR}/payload_${arch}" .
+            cd "${ROOT_DIR}"
           }
 
           process_arch "x86_64" "${{ steps.fetch-assets.outputs.url_x86 }}"

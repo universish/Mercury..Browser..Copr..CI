@@ -59,7 +59,7 @@ jobs:
           ROOT_DIR="$(pwd)"
           RELEASE_JSON=$(cat upstream_release.json)
 
-          # Sıralama: rpm -> deb -> appimage (portable zip tamamen çıkarıldı)
+          # Sıralama: rpm -> deb -> appimage
           get_candidates() {
             local arch_pat="$1"
             # 1. RPM
@@ -150,7 +150,7 @@ jobs:
               chmod -R u+w "${ROOT_DIR}/payload_${arch}"
               find "${ROOT_DIR}/payload_${arch}" -type f \( -name "mercury" -o -name "mercury-bin" -o -name "*.so*" \) -exec chmod 0755 {} +
 
-              # DEB veya AppImage içindeki simgeleri payload dizinine kopyala
+              # Simge dosyalarını tara ve payload köküne kopyala
               find . -type f \( -name "*logo*.png" -o -name "*mercury*.png" -o -name "default*.png" \) -exec cp -n {} "${ROOT_DIR}/payload_${arch}/" \; 2>/dev/null || true
 
               # 5. Payload arşivi üret

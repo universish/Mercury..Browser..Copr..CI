@@ -18,8 +18,8 @@ jobs:
       - name: Gerekli Paketleri Yükle
         run: |
           dnf install -y git curl jq cpio rpm-build rpmdevtools copr-cli \
-                         binutils p7zip tar zstd gzip unzip python3 \
-                         desktop-file-utils libappstream-glib file
+                         binutils tar zstd gzip python3 desktop-file-utils \
+                         libappstream-glib file
 
       - name: Git Güvenli Dizin Yapılandırması
         run: |
@@ -53,30 +53,27 @@ jobs:
           echo "clean_version=$CLEAN_VER" >> $GITHUB_OUTPUT
           echo "$RELEASE_JSON" > upstream_release.json
 
-      - name: Varlıkları İndir, Ayıkla ve Hata Durumunda DEB/AppImage'a Geç
+      - name: Varlıkları İndir, Ayıkla ve Standart Payload Paketle
         run: |
           set -euo pipefail
           ROOT_DIR="$(pwd)"
           RELEASE_JSON=$(cat upstream_release.json)
 
-          # Mimariye göre fallback listesi üreten fonksiyon
+          # Sıralama: rpm -> deb -> appimage (portable zip tamamen çıkarıldı)
           get_candidates() {
             local arch_pat="$1"
             # 1. RPM
             echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
               '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.rpm$"; "i")) | ["rpm", .browser_download_url, .name] | @tsv'
-            # 2. Portable (ZIP / TAR)
-            echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
-              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.(zip|tar\\.xz|tar\\.gz|tar|tar\\.zst)$"; "i")) | ["portable", .browser_download_url, .name] | @tsv'
-            # 3. DEB
+            # 2. DEB
             echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
               '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.deb$"; "i")) | ["deb", .browser_download_url, .name] | @tsv'
-            # 4. AppImage
+            # 3. AppImage
             echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
               '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.appimage$"; "i")) | ["appimage", .browser_download_url, .name] | @tsv'
           }
 
-          process_arch_with_fallback() {
+          process_arch() {
             local arch="$1"       # x86_64 veya aarch64
             local arch_pat="$2"   # AVX2 veya ARM64
             local success=0
@@ -89,7 +86,7 @@ jobs:
             candidates=$(get_candidates "$arch_pat")
 
             if [ -z "$candidates" ]; then
-              echo "HATA: $arch ($arch_pat) için upstream deposunda hiçbir varlık bulunamadı!" >&2
+              echo "HATA: $arch ($arch_pat) için upstream varlığı bulunamadı!" >&2
               exit 1
             fi
 
@@ -100,7 +97,6 @@ jobs:
 
               echo "--> Deneniyor: [$arch] Format: $format | Dosya: $filename"
               
-              # Dizinleri temizle
               rm -rf "${ROOT_DIR}/extract_${arch}" "${ROOT_DIR}/payload_${arch}"
               mkdir -p "${ROOT_DIR}/extract_${arch}" "${ROOT_DIR}/payload_${arch}"
 
@@ -118,21 +114,6 @@ jobs:
                 *.rpm)
                   rpm2cpio "${ROOT_DIR}/dl_${arch}/${filename}" | cpio -idmv || extract_ok=0
                   ;;
-                *.zip)
-                  unzip -q -o "${ROOT_DIR}/dl_${arch}/${filename}" || 7z x -y "${ROOT_DIR}/dl_${arch}/${filename}" || extract_ok=0
-                  ;;
-                *.tar.gz|*.tgz)
-                  tar -xzf "${ROOT_DIR}/dl_${arch}/${filename}" || extract_ok=0
-                  ;;
-                *.tar.xz)
-                  tar -xJf "${ROOT_DIR}/dl_${arch}/${filename}" || extract_ok=0
-                  ;;
-                *.tar.zst)
-                  tar --zstd -xf "${ROOT_DIR}/dl_${arch}/${filename}" || extract_ok=0
-                  ;;
-                *.tar)
-                  tar -xf "${ROOT_DIR}/dl_${arch}/${filename}" || extract_ok=0
-                  ;;
                 *.deb)
                   ( ar x "${ROOT_DIR}/dl_${arch}/${filename}" && tar -xf data.tar.* ) || extract_ok=0
                   ;;
@@ -141,22 +122,22 @@ jobs:
                   ( "${ROOT_DIR}/dl_${arch}/${filename}" --appimage-extract && mv squashfs-root/* . && rm -rf squashfs-root ) || extract_ok=0
                   ;;
                 *)
-                  7z x -y "${ROOT_DIR}/dl_${arch}/${filename}" || extract_ok=0
+                  extract_ok=0
                   ;;
               esac
 
               if [ $extract_ok -eq 0 ]; then
-                echo "::warning:: [$arch] $filename arşivi açılamadı! Bir sonraki pakete geçiliyor..."
+                echo "::warning:: [$arch] $filename açılamadı! Bir sonraki pakete geçiliyor..."
                 cd "${ROOT_DIR}"
                 continue
               fi
 
-              # 3. İkili dosya (binary) doğrulama
+              # 3. İkili dosya tespiti
               local bin_file
               bin_file=$(find . -maxdepth 5 -type f \( -name "mercury" -o -name "mercury-browser" \) | head -n 1 || true)
 
               if [ -z "$bin_file" ]; then
-                echo "::warning:: [$arch] $filename içinde çalıştırılabilir mercury dosyası bulunamadı! Bir sonraki formata geçiliyor..."
+                echo "::warning:: [$arch] $filename içinde çalıştırılabilir ikili dosya bulunamadı!"
                 cd "${ROOT_DIR}"
                 continue
               fi
@@ -165,16 +146,16 @@ jobs:
               bin_dir=$(dirname "$bin_file")
               cp -a "$bin_dir"/* "${ROOT_DIR}/payload_${arch}/"
 
-              # 4. Linux İzinlerini Düzelt (ZIP'ten gelen bozuk izinleri onar)
+              # 4. İzinleri ve simgeleri eşitle
               chmod -R u+w "${ROOT_DIR}/payload_${arch}"
-              find "${ROOT_DIR}/payload_${arch}" -type f \( -name "mercury" -o -name "mercury-browser" -o -name "chrome-sandbox" -o -name "*.so*" \) -exec chmod 0755 {} +
+              find "${ROOT_DIR}/payload_${arch}" -type f \( -name "mercury" -o -name "mercury-bin" -o -name "*.so*" \) -exec chmod 0755 {} +
 
-              # Simge dosyalarını tara ve payload köküne kopyala
-              find . -type f \( -name "*logo*.png" -o -name "*mercury*.png" \) -exec cp -n {} "${ROOT_DIR}/payload_${arch}/" \; 2>/dev/null || true
+              # DEB veya AppImage içindeki simgeleri payload dizinine kopyala
+              find . -type f \( -name "*logo*.png" -o -name "*mercury*.png" -o -name "default*.png" \) -exec cp -n {} "${ROOT_DIR}/payload_${arch}/" \; 2>/dev/null || true
 
-              # 5. Payload Tarball oluştur
+              # 5. Payload arşivi üret
               if ! tar -czf "${ROOT_DIR}/mercury-payload-${arch}.tar.gz" -C "${ROOT_DIR}/payload_${arch}" .; then
-                echo "::warning:: [$arch] Payload tarball oluşturulamadı! Bir sonraki formata geçiliyor..."
+                echo "::warning:: [$arch] Payload tarball oluşturulamadı!"
                 cd "${ROOT_DIR}"
                 continue
               fi
@@ -186,13 +167,13 @@ jobs:
             done <<< "$candidates"
 
             if [ $success -eq 0 ]; then
-              echo "HATA: [$arch] mimarisi için denenen hiçbir paket (rpm, portable zip, deb, appimage) açılamadı!" >&2
+              echo "HATA: [$arch] için uygun hiçbir paket (rpm, deb, appimage) hazırlanamadı!" >&2
               exit 1
             fi
           }
 
-          process_arch_with_fallback "x86_64" "AVX2"
-          process_arch_with_fallback "aarch64" "ARM64"
+          process_arch "x86_64" "AVX2"
+          process_arch "aarch64" "ARM64"
 
       - name: Desktop Dosyasını Doğrula ve Oluştur
         run: |
@@ -201,7 +182,7 @@ jobs:
           Version=1.0
           Name=Mercury Browser
           GenericName=Web Browser
-          Comment=Compiler-optimized Chromium browser with hardware acceleration
+          Comment=Compiler-optimized web browser with hardware acceleration
           Exec=mercury-browser %U
           StartupNotify=true
           Terminal=false
@@ -259,20 +240,17 @@ jobs:
           sed -i "s/^Version:.*/Version:        ${{ steps.fetch-version.outputs.clean_version }}/" "$SPEC_FILE"
           sed -i "s/^Release:.*/Release:        ${{ steps.counter.outputs.release_num }}%{?dist}/" "$SPEC_FILE"
 
-          # Desktop ve AppStream doğrulaması
           desktop-file-validate mercury-browser.desktop
           appstream-util validate-relax --nonet mercury-browser.metainfo.xml
 
-          # Copr mock ortamı öncesi yerel kontrol (x86_64 için prep ve build doğrulaması)
           echo "Yerel derleme testi yapılıyor..."
           rpmbuild -ba --target x86_64 "$SPEC_FILE"
 
-          # SRPM üretimi
           rpmbuild -bs "$SPEC_FILE"
           mkdir -p out
           cp ~/rpmbuild/SRPMS/*.src.rpm out/
 
-      - name: Copr Deposuna Gönder (Sadece Fedora 44 ve Rawhide)
+      - name: Copr Deposuna Gönder (Fedora 44 ve Rawhide)
         env:
           COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
         run: |

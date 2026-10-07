@@ -1,7 +1,7 @@
 Name:           mercury-browser
 Version:        1.0.0
 Release:        1%{?dist}
-Summary:        Compiler-optimized Chromium fork tuned for NVIDIA, AMD, and Intel hardware acceleration
+Summary:        Compiler-optimized browser fork tuned for NVIDIA, AMD, and Intel hardware acceleration
 License:        BSD-3-Clause AND MIT
 URL:            https://github.com/Alex313031/Mercury
 ExclusiveArch:  x86_64 aarch64
@@ -15,7 +15,6 @@ Source4:        mercury-browser.metainfo.xml
 Requires:       libva
 Requires:       libva-utils
 
-# ARM64 mock chroot'unda Intel paketlerinin aranmasını engelle
 %ifarch x86_64
 Recommends:     mesa-va-drivers
 Recommends:     nvidia-vaapi-driver
@@ -30,16 +29,15 @@ Recommends:     mesa-va-drivers
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 
-# İkili dosyalarda derleme hatalarını ve build-id çakışmalarını önleme
 %global debug_package %{nil}
 %global __strip /bin/true
 %global _build_id_links none
 %undefine _missing_build_ids_terminate_build
 
 %description
-Mercury is an aggressive compiler-optimized fork of Chromium built with AVX2 instruction
-sets on x86_64 and NEON extensions on ARM64. This package includes an intelligent wrapper
-for zero-configuration GPU hardware acceleration routing.
+Mercury is a compiler-optimized browser built with AVX2 instruction sets
+on x86_64 and NEON extensions on ARM64. This package includes an intelligent
+wrapper for zero-configuration multi-GPU hardware acceleration routing.
 
 %prep
 %ifarch x86_64
@@ -51,7 +49,7 @@ for zero-configuration GPU hardware acceleration routing.
 %endif
 
 %build
-# İkili paket doğrudan hazırlandığı için derleme adımı gerekmez
+# Pre-compiled binary repackaging
 
 %install
 rm -rf %{buildroot}
@@ -66,12 +64,13 @@ install -Dm755 %{SOURCE2} %{buildroot}%{_bindir}/mercury-browser
 install -Dm644 %{SOURCE3} %{buildroot}%{_datadir}/applications/mercury-browser.desktop
 install -Dm644 %{SOURCE4} %{buildroot}%{_datadir}/metainfo/mercury-browser.metainfo.xml
 
-# Simgelerin yerleştirilmesi (Glob hatası oluşmaması için garantili kopyalama)
+# Simgelerin yerleştirilmesi (DEB ve AppImage hiyerarşisi dahil)
 mkdir -p %{buildroot}%{_datadir}/icons/hicolor/128x128/apps
 ICON_FOUND=0
 for size in 16 24 32 48 64 128 256; do
     for logo in "%{buildroot}/opt/mercury-browser/product_logo_${size}.png" \
                 "%{buildroot}/opt/mercury-browser/mercury_${size}.png" \
+                "%{buildroot}/opt/mercury-browser/default${size}.png" \
                 "%{buildroot}/opt/mercury-browser/mercury.png"; do
         if [ -f "$logo" ]; then
             install -Dm644 "$logo" "%{buildroot}%{_datadir}/icons/hicolor/${size}x${size}/apps/mercury-browser.png"
@@ -81,7 +80,6 @@ for size in 16 24 32 48 64 128 256; do
     done
 done
 
-# Eğer hiçbir simge bulunamazsa herhangi bir PNG dosyasını simge olarak bağla
 if [ $ICON_FOUND -eq 0 ]; then
     FALLBACK_PNG=$(find %{buildroot}/opt/mercury-browser/ -name "*.png" | head -n 1 || true)
     if [ -n "$FALLBACK_PNG" ]; then
@@ -89,7 +87,7 @@ if [ $ICON_FOUND -eq 0 ]; then
     fi
 fi
 
-# Varsayılan şablon konfigürasyonu
+# Varsayılan bayrak konfigürasyonu
 mkdir -p %{buildroot}%{_sysconfdir}/mercury
 cat << 'EOF' > %{buildroot}%{_sysconfdir}/mercury/mercury-flags.conf
 --ozone-platform=x11
@@ -124,4 +122,4 @@ appstream-util validate-relax --nonet %{buildroot}%{_datadir}/metainfo/mercury-b
 
 %changelog
 * Wed Oct 07 2026 universish <universish@fedoraproject.org> - %{version}-%{release}
-- Automated packaging with dynamic multi-asset fallback (RPM -> Portable -> DEB -> AppImage).
+- Strict package fallback: RPM -> DEB -> AppImage.

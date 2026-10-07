@@ -34,12 +34,15 @@ jobs:
         id: fetch-assets
         run: |
           REPO="Alex313031/Mercury"
-          RELEASE_JSON=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest")
+          RELEASE_JSON=$(curl -sSL -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${REPO}/releases/latest")
+          
           LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
 
-          if [ -z "$LATEST_TAG" ] \vert{}\vert{} [ "$LATEST_TAG" = "null" ]; then
-            echo "Upstream sürüm bulunamadı."
-            exit 0
+          if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "null" ]]; then
+            echo "Hata: Upstream sürüm bulunamadı veya API limiti aşıldı." >&2
+            exit 1
           fi
 
           CLEAN_VER=$(echo "$LATEST_TAG" | sed 's/[^0-9.]*//g')
@@ -52,23 +55,35 @@ jobs:
 
             # 1. RPM
             matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
-              '.assets[] | select(.name | test($pat; "i")) \vert{} select(.name \vert{} test("\\.rpm$"; "i")) | .browser_download_url' | head -n 1)
-            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
+              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.rpm$"; "i")) | .browser_download_url' | head -n 1)
+            if [[ -n "$matched_url" && "$matched_url" != "null" ]]; then
+              echo "$matched_url"
+              return
+            fi
 
             # 2. Portable (ZIP / TAR)
             matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
-              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.zip$\vert{}\\.tar\\.xz$|\\.tar\\.gz$\vert{}\\.tar$"; "i")) | .browser_download_url' | head -n 1)
-            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
+              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.(zip|tar\\.xz|tar\\.gz|tar|tar\\.zst)$"; "i")) | .browser_download_url' | head -n 1)
+            if [[ -n "$matched_url" && "$matched_url" != "null" ]]; then
+              echo "$matched_url"
+              return
+            fi
 
             # 3. DEB
             matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
-              '.assets[] | select(.name | test($pat; "i")) \vert{} select(.name \vert{} test("\\.deb$"; "i")) | .browser_download_url' | head -n 1)
-            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
+              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.deb$"; "i")) | .browser_download_url' | head -n 1)
+            if [[ -n "$matched_url" && "$matched_url" != "null" ]]; then
+              echo "$matched_url"
+              return
+            fi
 
             # 4. AppImage
             matched_url=$(echo "$RELEASE_JSON" | jq -r --arg pat "$arch_pat" \
-              '.assets[] | select(.name | test($pat; "i")) \vert{} select(.name \vert{} test("\\.appimage$"; "i")) | .browser_download_url' | head -n 1)
-            [ -n "$matched_url" ] && [ "$matched_url" != "null" ] && echo "$matched_url" && return
+              '.assets[] | select(.name | test($pat; "i")) | select(.name | test("\\.appimage$"; "i")) | .browser_download_url' | head -n 1)
+            if [[ -n "$matched_url" && "$matched_url" != "null" ]]; then
+              echo "$matched_url"
+              return
+            fi
 
             echo ""
           }
@@ -76,8 +91,10 @@ jobs:
           URL_X86=$(find_asset_url "AVX2")
           URL_ARM=$(find_asset_url "ARM64")
 
-          if [ -z "$URL_X86" ] \vert{}\vert{} [ -z "$URL_ARM" ]; then
-            echo "Gerekli AVX2 veya ARM64 varlıkları bulunamadı."
+          if [[ -z "$URL_X86" || -z "$URL_ARM" ]]; then
+            echo "Hata: Gerekli AVX2 (x86_64) veya ARM64 ikili varlıkları upstream deposunda bulunamadı." >&2
+            echo "Bulunan X86: '$URL_X86'" >&2
+            echo "Bulunan ARM: '$URL_ARM'" >&2
             exit 1
           fi
 
@@ -91,12 +108,18 @@ jobs:
           process_arch() {
             local arch="$1"
             local url="$2"
+            
+            if [ -z "$url" ]; then
+              echo "Hata: $arch mimarisi için boş URL iletildi." >&2
+              exit 1
+            fi
+
             local filename
             filename=$(basename "$url")
 
-            echo "İşleniyor: $arch ($filename)"
+            echo "İşleniyor: $arch ($filename) -> $url"
             mkdir -p "dl_${arch}" "extract_${arch}" "payload_${arch}"
-            curl -sL "$url" -o "dl_${arch}/${filename}"
+            curl -sSL "$url" -o "dl_${arch}/${filename}"
 
             cd "extract_${arch}"
             case "$filename" in
@@ -133,17 +156,16 @@ jobs:
                 ;;
             esac
 
-            # İkili dosyanın (mercury) bulunduğu dizini tespit et ve payload dizinine kopyala
-            BIN_DIR=$(find . -maxdepth 3 -type f \( -name "mercury" -o -name "mercury-browser" \) -exec dirname {} + | head -n 1)
-            
-            if [ -n "$BIN_DIR" ]; then
+            # mercury veya mercury-browser çalıştırılabilir dosyasının kökünü tespit et
+            BIN_DIR=$(find . -maxdepth 4 -type f \( -name "mercury" -o -name "mercury-browser" \) -exec dirname {} + | head -n 1)
+
+            if [[ -n "$BIN_DIR" && "$BIN_DIR" != "." ]]; then
               cp -a "$BIN_DIR"/* "../payload_${arch}/"
             else
               cp -a ./* "../payload_${arch}/"
             fi
 
             cd "../payload_${arch}"
-            # Temiz bir şekilde tar.gz arşivi üret
             tar -czf "../../mercury-payload-${arch}.tar.gz" *
             cd ../..
           }
@@ -183,4 +205,95 @@ jobs:
               with open(output_desktop, 'w', encoding='utf-8') as f:
                   f.writelines(updated_lines)
           else:
-              full_content = f
+              full_content = f"""[Desktop Entry]
+          Version=1.0
+          Name=Mercury
+          GenericName=Web Browser
+          Comment=Access the Internet
+          Exec={target_exec} %U
+          StartupNotify=true
+          Terminal=false
+          Icon=mercury-browser
+          Type=Application
+          Categories=Network;WebBrowser;
+          MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+          Actions=new-window;new-private-window;temp-profile;safe-mode;
+
+          [Desktop Action new-window]
+          Name=New Window
+          Exec={target_exec} %U
+
+          [Desktop Action new-private-window]
+          Name=New Incognito Window
+          Exec={target_exec} --incognito %U
+
+          [Desktop Action temp-profile]
+          Name=Open New Window with a temporary profile
+          Exec={target_exec} --temp-profile %U
+
+          [Desktop Action safe-mode]
+          Name=Open in Safe Mode
+          Exec={target_exec} --safe-mode %U
+          """
+              clean_content = "\n".join([line.lstrip() for line in full_content.strip().splitlines()]) + "\n"
+              with open(output_desktop, 'w', encoding='utf-8') as f:
+                  f.write(clean_content)
+          EOF
+
+      - name: Sürüm ve Sayaç (Release Counter) Yönetimi
+        id: counter
+        run: |
+          STATE_FILE="state.json"
+          CURR_VER="${{ steps.fetch-assets.outputs.clean_version }}"
+          BUILD_NUM=1
+
+          if [ -f "$STATE_FILE" ]; then
+            SAVED_VER=$(jq -r '.version // empty' "$STATE_FILE")
+            SAVED_NUM=$(jq -r '.release // 0' "$STATE_FILE")
+            if [ "$SAVED_VER" = "$CURR_VER" ]; then
+              BUILD_NUM=$((SAVED_NUM + 1))
+            fi
+          fi
+
+          echo "{\"version\": \"$CURR_VER\", \"release\": $BUILD_NUM}" > "$STATE_FILE"
+          echo "release_num=$BUILD_NUM" >> "$GITHUB_OUTPUT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$STATE_FILE"
+          git commit -m "Auto-increment build: ${CURR_VER}-${BUILD_NUM}" || echo "Değişiklik yok"
+          git push origin HEAD:${{ github.ref_name }} || echo "Push atlandı"
+
+      - name: RPM ve SRPM Paketle
+        run: |
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cp mercury-payload-x86_64.tar.gz ~/rpmbuild/SOURCES/
+          cp mercury-payload-aarch64.tar.gz ~/rpmbuild/SOURCES/
+          cp mercury-launcher.sh ~/rpmbuild/SOURCES/
+          cp mercury-browser.desktop ~/rpmbuild/SOURCES/
+          cp mercury-browser.metainfo.xml ~/rpmbuild/SOURCES/
+          cp specs/mercury-browser.spec ~/rpmbuild/SPECS/
+
+          SPEC_FILE=~/rpmbuild/SPECS/mercury-browser.spec
+          sed -i "s/^Version:.*/Version:        ${{ steps.fetch-assets.outputs.clean_version }}/" "$SPEC_FILE"
+          sed -i "s/^Release:.*/Release:        ${{ steps.counter.outputs.release_num }}%{?dist}/" "$SPEC_FILE"
+
+          rpmbuild -bs "$SPEC_FILE"
+
+          mkdir -p out
+          cp ~/rpmbuild/SRPMS/*.src.rpm out/
+
+      - name: Copr Deposuna Gönder (Sadece Fedora 44 ve Rawhide)
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          mkdir -p ~/.config
+          echo "$COPR_CONFIG" > ~/.config/copr
+          chmod 600 ~/.config/copr
+          SRPM_FILE=$(ls out/*.src.rpm | head -n 1)
+
+          copr-cli build universish/Mercury "$SRPM_FILE" \
+            --chroot fedora-44-x86_64 \
+            --chroot fedora-44-aarch64 \
+            --chroot fedora-rawhide-x86_64 \
+            --chroot fedora-rawhide-aarch64

@@ -190,6 +190,7 @@ jobs:
           Type=Application
           Categories=Network;WebBrowser;
           MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+          StartupWMClass=mercury-default
           Actions=new-window;new-private-window;
 
           [Desktop Action new-window]

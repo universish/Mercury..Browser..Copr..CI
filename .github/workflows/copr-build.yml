@@ -2,22 +2,100 @@ name: Mercury Upstream Sync & Copr Builder
 
 on:
   schedule:
-    # 16:30 UTC ve 21:30 UTC -> US East (Ashburn, VA) Öğle molası ve Mesai bitimi
+    # 16:30 UTC (ABD Doğu ~12:30 Öğle Arası) ve 21:30 UTC (ABD Doğu ~17:30 İş Çıkışı)
     - cron: '30 16,21 * * *'
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Yeni sürüm olmasa bile paketlemeyi zorla (Release sayacını artırır)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
-  check-and-build:
+  # =========================================================================
+  # 1. AŞAMA: GÜNCEL SÜRÜMÜN YAYINLANIP YAYINLANMADIĞINI KONTROL ET
+  # =========================================================================
+  check_update:
+    name: 1. Upstream Sürüm Kontrolü
+    runs-on: ubuntu-latest
+    outputs:
+      update_needed: ${{ steps.check.outputs.update_needed }}
+      clean_version: ${{ steps.check.outputs.clean_version }}
+      release_num: ${{ steps.check.outputs.release_num }}
+    steps:
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+
+      - name: Upstream Sürümünü ve state.json Dosyasını Denetle
+        id: check
+        run: |
+          set -euo pipefail
+          REPO="Alex313031/Mercury"
+          
+          RELEASE_JSON=$(curl -sSL -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${REPO}/releases/latest")
+          
+          LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
+
+          if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "null" ]]; then
+            echo "::error::Hata: Upstream sürüm bulunamadı veya API limiti aşıldı."
+            exit 1
+          fi
+
+          CLEAN_VER=$(echo "$LATEST_TAG" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1 || true)
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER=$(echo "$LATEST_TAG" | sed -E 's/^[^0-9]+//; s/[^0-9.]+$//')
+          fi
+
+          STATE_FILE="state.json"
+          SAVED_VER=""
+          SAVED_NUM=0
+
+          if [ -f "$STATE_FILE" ]; then
+            SAVED_VER=$(jq -r '.version // empty' "$STATE_FILE")
+            SAVED_NUM=$(jq -r '.release // 0' "$STATE_FILE")
+          fi
+
+          echo "Mevcut Kayıtlı Sürüm (state.json): ${SAVED_VER:-Yok} (Release: $SAVED_NUM)"
+          echo "Upstream Son Sürüm: $CLEAN_VER (Etiket: $LATEST_TAG)"
+
+          if [ "$SAVED_VER" != "$CLEAN_VER" ]; then
+            echo "::notice::Yeni sürüm tespit edildi! ($SAVED_VER -> $CLEAN_VER). 2. aşamaya geçiliyor..."
+            echo "update_needed=true" >> "$GITHUB_OUTPUT"
+            echo "clean_version=$CLEAN_VER" >> "$GITHUB_OUTPUT"
+            echo "release_num=1" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.force_build }}" = "true" ]; then
+            NEXT_NUM=$((SAVED_NUM + 1))
+            echo "::notice::Manuel zorunlu derleme tetiklendi! Sürüm: $CLEAN_VER, Yeni Release: $NEXT_NUM"
+            echo "update_needed=true" >> "$GITHUB_OUTPUT"
+            echo "clean_version=$CLEAN_VER" >> "$GITHUB_OUTPUT"
+            echo "release_num=$NEXT_NUM" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Yeni güncelleme yayınlanmamış ($CLEAN_VER zaten güncel). İş akışı sonlandırılıyor."
+            echo "update_needed=false" >> "$GITHUB_OUTPUT"
+            echo "clean_version=$CLEAN_VER" >> "$GITHUB_OUTPUT"
+            echo "release_num=$SAVED_NUM" >> "$GITHUB_OUTPUT"
+          fi
+
+  # =========================================================================
+  # 2. AŞAMA: VARLIKLARI İNDİR, AÇ VE FEDORA COPR SPEC İLE YENİDEN PAKETLE
+  # =========================================================================
+  package_srpm:
+    name: 2. İndir, Ayıkla ve SRPM Paketle
+    needs: check_update
+    if: needs.check_update.outputs.update_needed == 'true'
     runs-on: ubuntu-latest
     container:
       image: fedora:44
     steps:
       - name: Gerekli Paketleri Yükle
         run: |
-          dnf install -y git curl jq cpio rpm-build rpmdevtools copr-cli \
+          dnf install -y git curl jq cpio rpm-build rpmdevtools \
                          binutils tar zstd gzip python3 desktop-file-utils \
                          libappstream-glib file
 
@@ -27,31 +105,13 @@ jobs:
 
       - name: Depoyu Klonla
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Upstream Sürümlerini Denetle
-        id: fetch-version
+      - name: Upstream Yayın Bilgilerini Al
         run: |
           REPO="Alex313031/Mercury"
-          RELEASE_JSON=$(curl -sSL -H "Accept: application/vnd.github.v3+json" \
+          curl -sSL -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${REPO}/releases/latest")
-          
-          LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
-
-          if [[ -z "$LATEST_TAG" || "$LATEST_TAG" == "null" ]]; then
-            echo "Hata: Upstream sürüm bulunamadı veya API limiti aşıldı." >&2
-            exit 1
-          fi
-
-          CLEAN_VER=$(echo "$LATEST_TAG" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1)
-          if [ -z "$CLEAN_VER" ]; then
-            CLEAN_VER=$(echo "$LATEST_TAG" | sed -E 's/^[^0-9]+//; s/[^0-9.]+$//')
-          fi
-
-          echo "clean_version=$CLEAN_VER" >> $GITHUB_OUTPUT
-          echo "$RELEASE_JSON" > upstream_release.json
+            "https://api.github.com/repos/${REPO}/releases/latest" > upstream_release.json
 
       - name: Varlıkları İndir, Ayıkla ve Standart Payload Paketle
         run: |
@@ -212,31 +272,7 @@ jobs:
           EOF
           desktop-file-validate mercury-browser.desktop
 
-      - name: Sürüm ve Sayaç (Release Counter) Yönetimi
-        id: counter
-        run: |
-          STATE_FILE="state.json"
-          CURR_VER="${{ steps.fetch-version.outputs.clean_version }}"
-          BUILD_NUM=1
-
-          if [ -f "$STATE_FILE" ]; then
-            SAVED_VER=$(jq -r '.version // empty' "$STATE_FILE")
-            SAVED_NUM=$(jq -r '.release // 0' "$STATE_FILE")
-            if [ "$SAVED_VER" = "$CURR_VER" ]; then
-              BUILD_NUM=$((SAVED_NUM + 1))
-            fi
-          fi
-
-          echo "{\"version\": \"$CURR_VER\", \"release\": $BUILD_NUM}" > "$STATE_FILE"
-          echo "release_num=$BUILD_NUM" >> "$GITHUB_OUTPUT"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$STATE_FILE"
-          git commit -m "Auto-increment build: ${CURR_VER}-${BUILD_NUM}" || echo "Değişiklik yok"
-          git push origin HEAD:${{ github.ref_name }} || echo "Push atlandı"
-
-      - name: RPM/SRPM Paketle ve Yerel Mock Testi Yap
+      - name: RPM/SRPM Paketle ve Yerel Doğrulama Testi Yap
         run: |
           mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           cp mercury-payload-x86_64.tar.gz ~/rpmbuild/SOURCES/
@@ -244,11 +280,16 @@ jobs:
           cp mercury-launcher.sh ~/rpmbuild/SOURCES/
           cp mercury-browser.desktop ~/rpmbuild/SOURCES/
           cp mercury-browser.metainfo.xml ~/rpmbuild/SOURCES/
-          cp specs/mercury-browser.spec ~/rpmbuild/SPECS/
+
+          if [ -f "specs/mercury-browser.spec" ]; then
+            cp specs/mercury-browser.spec ~/rpmbuild/SPECS/
+          else
+            cp mercury-browser.spec ~/rpmbuild/SPECS/
+          fi
 
           SPEC_FILE=~/rpmbuild/SPECS/mercury-browser.spec
-          sed -i "s/^Version:.*/Version:        ${{ steps.fetch-version.outputs.clean_version }}/" "$SPEC_FILE"
-          sed -i "s/^Release:.*/Release:        ${{ steps.counter.outputs.release_num }}%{?dist}/" "$SPEC_FILE"
+          sed -i "s/^Version:.*/Version:        ${{ needs.check_update.outputs.clean_version }}/" "$SPEC_FILE"
+          sed -i "s/^Release:.*/Release:        ${{ needs.check_update.outputs.release_num }}%{?dist}/" "$SPEC_FILE"
 
           desktop-file-validate mercury-browser.desktop
           appstream-util validate-relax --nonet mercury-browser.metainfo.xml
@@ -256,9 +297,46 @@ jobs:
           echo "Yerel derleme testi yapılıyor..."
           rpmbuild -ba --target x86_64 "$SPEC_FILE"
 
+          echo "SRPM oluşturuluyor..."
           rpmbuild -bs "$SPEC_FILE"
           mkdir -p out
           cp ~/rpmbuild/SRPMS/*.src.rpm out/
+
+      - name: SRPM Paketini 3. Aşama İçin Yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: srpm-package
+          path: out/*.src.rpm
+          retention-days: 1
+
+  # =========================================================================
+  # 3. AŞAMA: FEDORA COPR DEPOSUNA GÖNDER VE SÜRÜM DURUMUNU KAYDET
+  # =========================================================================
+  publish_copr:
+    name: 3. Copr Deposuna Gönder ve Yayınla
+    needs: [check_update, package_srpm]
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+    steps:
+      - name: Gerekli Paketleri Yükle
+        run: |
+          dnf install -y git copr-cli
+
+      - name: Git Güvenli Dizin Yapılandırması
+        run: |
+          git config --global --add safe.directory '*'
+
+      - name: Depoyu Klonla
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SRPM Paketini İndir
+        uses: actions/download-artifact@v4
+        with:
+          name: srpm-package
+          path: out/
 
       - name: Copr Deposuna Gönder (Fedora 44 ve Rawhide)
         env:
@@ -274,4 +352,17 @@ jobs:
             --chroot fedora-44-aarch64 \
             --chroot fedora-rawhide-x86_64 \
             --chroot fedora-rawhide-aarch64
-            
+
+      - name: Yeni Sürüm Bilgilerini state.json Dosyasına Kaydet
+        run: |
+          STATE_FILE="state.json"
+          CURR_VER="${{ needs.check_update.outputs.clean_version }}"
+          BUILD_NUM="${{ needs.check_update.outputs.release_num }}"
+
+          echo "{\"version\": \"$CURR_VER\", \"release\": $BUILD_NUM}" > "$STATE_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$STATE_FILE"
+          git commit -m "Update version state: ${CURR_VER}-${BUILD_NUM}" || echo "Değişiklik yok"
+          git push origin HEAD:${{ github.ref_name }}

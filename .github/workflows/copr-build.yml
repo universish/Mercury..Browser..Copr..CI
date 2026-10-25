@@ -2,8 +2,9 @@ name: Mercury Upstream Sync & Copr Builder
 
 on:
   schedule:
-    # 16:30 UTC (ABD Doğu ~12:30 Öğle Arası) ve 21:30 UTC (ABD Doğu ~17:30 İş Çıkışı)
-    - cron: '30 16,21 * * *'
+    # Her gün Türkiye saatiyle 17:00
+    - cron: '0 17 * * *'
+      timezone: Europe/Istanbul
   workflow_dispatch:
     inputs:
       force_build:
@@ -97,7 +98,7 @@ jobs:
         run: |
           dnf install -y git curl jq cpio rpm-build rpmdevtools \
                          binutils tar zstd gzip python3 desktop-file-utils \
-                         libappstream-glib file
+                         libappstream-glib file clamav clamav-freshclam
 
       - name: Git Güvenli Dizin Yapılandırması
         run: |
@@ -243,6 +244,27 @@ jobs:
 
           process_arch "x86_64" "AVX2"
           process_arch "aarch64" "ARM64"
+
+      - name: Zorunlu Statik Payload Kontrolleri
+        run: |
+          python3 scripts/check_payload.py payload_x86_64:x86_64 payload_aarch64:aarch64
+
+      - name: Zorunlu ClamAV Taraması
+        run: |
+          set -euo pipefail
+          freshclam
+          clamscan --recursive --infected \
+            --max-filesize=2000M --max-scansize=2000M \
+            --max-files=2000000 --max-recursion=2000000 \
+            payload_x86_64 payload_aarch64
+
+      - name: VirusTotal Taraması (isteğe bağlı hizmet)
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          python3 scripts/scan_virustotal.py \
+            mercury-payload-x86_64.tar.gz:payload_x86_64 \
+            mercury-payload-aarch64.tar.gz:payload_aarch64
 
       - name: Desktop Dosyasını Doğrula ve Oluştur
         run: |

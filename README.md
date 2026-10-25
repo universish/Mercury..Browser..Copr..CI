@@ -19,10 +19,10 @@ Mercury is a compiler-optimized web browser fork engineered to maximize hardware
 
 ### Key Packaging Principles
 1. **Strict Architecture Filtering:** Only compiler-optimized binaries targeting **`x86_64` (AVX2 instructions enabled)** and **`aarch64` (ARM64)** are extracted and packaged. Non-vectorized x86 builds are intentionally excluded.
-2. **Deterministic Fallback Pipeline:** The automation inspects upstream release assets twice daily, enforcing a strict package priority matrix:
+2. **Deterministic Fallback Pipeline:** The automation inspects upstream release assets daily, enforcing a strict package priority matrix:
    $$\text{RPM} \longrightarrow \text{DEB} \longrightarrow \text{AppImage}$$
    *(Unreliable portable ZIP archives are completely bypassed to preserve POSIX file permissions, shared library links, and system icon assets).*
-3. **Automated Lifecycle & Release Counter:** The workflow tracks release versions and packaging revision numbers deterministically in `state.json` (e.g., `<version>-1` $\rightarrow$ `<version>-2`).
+3. **Automated Lifecycle & Release Counter:** The workflow checks upstream every day at **17:00 Europe/Istanbul** and tracks release versions and packaging revision numbers in `state.json` (e.g., `<version>-1` $\rightarrow$ `<version>-2`).
 4. **Targeted Distributions:** Built specifically inside Fedora containers targeting **Fedora 44** and **Fedora Rawhide** mock chroots.
 
 ---
@@ -141,6 +141,8 @@ rm -rf ~/.config/mercury-flags.conf ~/.config/mercury
 
 * **Non-Invasive RPM Spec:** Packages isolate core binaries inside `/opt/mercury-browser/` without overriding base system shared libraries.
 * **Hermetic Packaging:** All artifacts are assembled in official Fedora root containers and submitted to isolated chroots on Fedora Copr.
+* **GitHub Actions security gate:** Before the SRPM is uploaded or submitted to Copr, the extracted x86_64 and aarch64 payloads must pass static integrity checks and a full recursive ClamAV scan with freshly downloaded signatures. These steps run in the GitHub hosted Actions job, not on Copr workers. A failed check stops publication.
+* **Optional VirusTotal:** Add `VT_API_KEY` as a GitHub Actions repository secret to enable it. The workflow first uploads each payload archive directly (using VirusTotal's large-file upload URL above 32 MB). If upload or analysis fails, it tries a ZIP of the extracted payload, then SHA-256 lookups for individual files. VirusTotal limits uploads to 650 MB; the script caps calls at 40 per run and spaces them 16 seconds apart. A hash lookup only checks files already known to VirusTotal; it does not upload or newly scan the file. A malicious or suspicious result stops publication. Missing credentials, quota, size, network, timeout, and unknown-hash cases emit Actions warnings and leave the mandatory gates in control. VirusTotal may share submitted files and queried indicators with its community; configure the secret only if upstream payload disclosure is acceptable.
 * **License:** This packaging automation infrastructure is distributed under the [MIT License](https://github.com/Alex313031/Mercury/blob/main/LICENSE.md).
 * **Mercury Browser License:** [Mozilla Public License 2.0](https://github.com/universish/Mercury..Browser..Copr..CI/blob/main/LICENSE.md)
 * Mercury Browser remains governed by its respective upstream licenses (BSD-3-Clause / Chromium Authors).

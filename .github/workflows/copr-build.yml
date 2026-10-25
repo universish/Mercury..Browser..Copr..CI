@@ -86,7 +86,7 @@ jobs:
   # 2. AŞAMA: VARLIKLARI İNDİR, AÇ VE FEDORA COPR SPEC İLE YENİDEN PAKETLE
   # =========================================================================
   package_srpm:
-    name: 2. İndir, Ayıkla ve SRPM Paketle
+    name: '2. GitHub VM: Tara ve SRPM Paketle'
     needs: check_update
     if: needs.check_update.outputs.update_needed == 'true'
     runs-on: ubuntu-latest
@@ -105,6 +105,9 @@ jobs:
 
       - name: Depoyu Klonla
         uses: actions/checkout@v4
+
+      - name: Güvenlik Kapısı Testleri
+        run: python3 -m unittest discover -s tests -v
 
       - name: Upstream Yayın Bilgilerini Al
         run: |
@@ -252,7 +255,7 @@ jobs:
         run: |
           set -euo pipefail
           freshclam
-          clamscan --recursive --infected \
+          clamscan --recursive --infected --alert-exceeds-max=yes \
             --max-filesize=2000M --max-scansize=2000M \
             --max-files=2000000 --max-recursion=2000000 \
             payload_x86_64 payload_aarch64
@@ -359,20 +362,28 @@ jobs:
           name: srpm-package
           path: out/
 
-      - name: Copr Deposuna Gönder (Fedora 44 ve Rawhide)
+      # All malware scanning has finished on the GitHub hosted VM before this job.
+      - name: Copr Deposuna Gönder (Tüm Dağıtım Hedefleri)
         env:
           COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.config
           echo "$COPR_CONFIG" > ~/.config/copr
           chmod 600 ~/.config/copr
           SRPM_FILE=$(ls out/*.src.rpm | head -n 1)
 
-          copr-cli build universish/Mercury "$SRPM_FILE" \
-            --chroot fedora-44-x86_64 \
-            --chroot fedora-44-aarch64 \
-            --chroot fedora-rawhide-x86_64 \
-            --chroot fedora-rawhide-aarch64
+          chroot_args=()
+          while IFS= read -r chroot; do
+            [[ -z "$chroot" || "$chroot" == \#* ]] && continue
+            if [[ "$chroot" == *-i386 ]]; then
+              echo "::warning::$chroot atlandı: upstream i386 payload yok; 64 bit ikili i386 olarak paketlenemez."
+              continue
+            fi
+            chroot_args+=(--chroot "$chroot")
+          done < copr-chroots.txt
+          test "${#chroot_args[@]}" -gt 0
+          copr-cli build universish/Mercury "$SRPM_FILE" "${chroot_args[@]}"
 
       - name: Yeni Sürüm Bilgilerini state.json Dosyasına Kaydet
         run: |

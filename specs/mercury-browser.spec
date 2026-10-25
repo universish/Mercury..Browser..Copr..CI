@@ -4,7 +4,7 @@ Release:        1%{?dist}
 Summary:        Compiler-optimized browser fork tuned for NVIDIA, AMD, and Intel hardware acceleration
 License:        MPL-2.0 AND BSD-3-Clause AND MIT
 URL:            https://github.com/Alex313031/Mercury
-ExclusiveArch:  x86_64 aarch64
+ExclusiveArch:  x86_64 x86_64_v2 aarch64
 
 Source0:        mercury-payload-x86_64.tar.gz
 Source1:        mercury-payload-aarch64.tar.gz
@@ -12,11 +12,17 @@ Source2:        mercury-launcher.sh
 Source3:        mercury-browser.desktop
 Source4:        mercury-browser.metainfo.xml
 
+%if 0%{?suse_version}
+Requires:       libva2
+%else
 Requires:       libva
+%endif
 Requires:       libva-utils
 
+# RPM 4.11 (EL7) does not support weak dependency tags.
+%if 0%{?rhel} != 7
 # Mimariye göre donanım hızlandırma paketleri
-%ifarch x86_64
+%ifarch x86_64 x86_64_v2
 Recommends:     mesa-va-drivers
 Recommends:     nvidia-vaapi-driver
 Recommends:     libva-intel-driver
@@ -27,8 +33,11 @@ Recommends:     intel-media-driver
 Recommends:     mesa-va-drivers
 %endif
 
+%endif
+
 BuildRequires:  desktop-file-utils
-BuildRequires:  libappstream-glib
+# AppStream validation runs on the GitHub VM before submission to Copr.
+# Keeping it out of build dependencies also supports older EL and openSUSE.
 
 # İkili dosyalarda strip hatası ve build-id çakışmalarını engelleme
 %global debug_package %{nil}
@@ -43,7 +52,7 @@ wrapper and pre-configured preferences for zero-configuration multi-GPU
 hardware video acceleration routing on Linux.
 
 %prep
-%ifarch x86_64
+%ifarch x86_64 x86_64_v2
 %setup -q -c -T -a 0 -n mercury-extracted
 %endif
 
@@ -103,7 +112,6 @@ EOF
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/mercury-browser.desktop
-appstream-util validate-relax --nonet %{buildroot}%{_datadir}/metainfo/mercury-browser.metainfo.xml
 
 %files
 /opt/mercury-browser

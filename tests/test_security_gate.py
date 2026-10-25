@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import os
 import struct
@@ -68,6 +69,26 @@ class SecurityGateTests(unittest.TestCase):
                  patch.object(vt.Client, "query_hashes", lambda client, path: observed.append("hashes")):
                 self.assertEqual(vt.main(), 0)
             self.assertEqual(observed, ["hashes"])
+
+    def test_hash_queries_use_sha256_and_deduplicate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "one").write_bytes(b"sample")
+            (root / "two").write_bytes(b"sample")
+            (root / "link").symlink_to("one")
+            client = vt.Client("test-key")
+            response = {"data": {"attributes": {"last_analysis_stats": {"malicious": 0, "suspicious": 0}}}}
+            with patch.object(client, "request", return_value=(200, response)) as request:
+                client.query_hashes(root)
+            request.assert_called_once_with(f"{vt.BASE}/files/{hashlib.sha256(b'sample').hexdigest()}")
+
+    def test_unknown_hash_is_warning_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "one").write_bytes(b"sample")
+            client = vt.Client("test-key")
+            with patch.object(client, "request", return_value=(404, None)):
+                client.query_hashes(root)
 
 
 if __name__ == "__main__":

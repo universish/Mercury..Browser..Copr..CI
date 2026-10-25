@@ -23,7 +23,7 @@ Mercury is a compiler-optimized web browser fork engineered to maximize hardware
    $$\text{RPM} \longrightarrow \text{DEB} \longrightarrow \text{AppImage}$$
    *(Unreliable portable ZIP archives are completely bypassed to preserve POSIX file permissions, shared library links, and system icon assets).*
 3. **Automated Lifecycle & Release Counter:** The workflow checks upstream every day at **23:30 Europe/Istanbul** and tracks release versions and packaging revision numbers in `state.json` (e.g., `<version>-1` $\rightarrow$ `<version>-2`).
-4. **Targeted Distributions:** Built specifically inside Fedora containers targeting **Fedora 44** and **Fedora Rawhide** mock chroots.
+4. **Targeted Distributions:** The GitHub hosted VM prepares and scans the payloads in a Fedora container. Copr then repackages the approved SRPM for the targets in [`copr-chroots.txt`](copr-chroots.txt): AlmaLinux / Alma+EPEL 9 and 10, Kitten 10 variants, CentOS Stream 8/9/10 and EPEL Next 8/9, EPEL 7/8/9/10, Fedora 44/45/ELN/Rawhide, openSUSE Leap 16.0/Tumbleweed, RHEL 7/8/9/10 and RHEL+EPEL 10, plus Custom 1 x86_64. Requested x86_64_v2 chroots reuse the x86_64 AVX2 payload; AVX2 remains a CPU requirement beyond the v2 baseline. Custom 1 i386 is recorded but skipped with an Actions warning because the selected upstream payloads are 64 bit only. Custom chroots require usable repository/buildroot configuration in Copr. Successful packaging does not establish runtime ABI compatibility on older distributions.
 
 ---
 

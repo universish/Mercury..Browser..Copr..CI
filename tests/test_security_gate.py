@@ -54,7 +54,7 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaises(vt.Detection):
             vt.check_stats({"malicious": 1, "suspicious": 0}, "sample")
 
-    def test_virustotal_retries_zip_then_hashes(self):
+    def test_virustotal_queries_each_payload_by_hash_without_uploading(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "payload"
             root.mkdir()
@@ -63,16 +63,11 @@ class SecurityGateTests(unittest.TestCase):
             archive.write_bytes(b"archive")
             observed = []
 
-            def fail_upload(client, path):
-                observed.append(path.suffix)
-                raise vt.VTError("simulated upload error")
-
             with patch.dict(os.environ, {"VT_API_KEY": "test-key"}), \
                  patch.object(vt.sys, "argv", ["script", f"{archive}:{root}"]), \
-                 patch.object(vt.Client, "upload", fail_upload), \
                  patch.object(vt.Client, "query_hashes", lambda client, path: observed.append("hashes")):
                 self.assertEqual(vt.main(), 0)
-            self.assertEqual(observed, [".gz", ".zip", "hashes"])
+            self.assertEqual(observed, ["hashes"])
 
 
 if __name__ == "__main__":

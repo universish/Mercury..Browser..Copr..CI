@@ -2,9 +2,8 @@ name: Mercury Upstream Sync & Copr Builder
 
 on:
   schedule:
-    # Her gün Türkiye saatiyle 17:00
-    - cron: '0 17 * * *'
-      timezone: Europe/Istanbul
+    # GitHub Actions cron ifadeleri UTC'dir. Türkiye (UTC+03:00) için 23:30.
+    - cron: '30 20 * * *'
   workflow_dispatch:
     inputs:
       force_build:
